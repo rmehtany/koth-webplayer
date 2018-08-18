@@ -142,6 +142,10 @@ define([
 						MathRandom: this.random.floatGenerator(),
 					}
 				}, {
+					runPre: `
+						let setMessage = params.setMsg;
+						let getMessage = params.getMsg;
+					`,
 					runCode: code,
 					runParams: [
 						'move',
