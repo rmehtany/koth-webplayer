@@ -180,26 +180,35 @@ define([
 			if(code !== null) {
 				const compiledCode = entryUtils.compile({
 					initCode: code,
-					initReturning: {attributes: '_attributes'},
 				}, {
-					runCode: `
-						return _main.call(
-							{},
-							bulletsLeft,
-							yourShots,
-							enemyShots,
-							yourMovement,
-							enemyMovement
-						);
-					`,
-					runParams: [
-						'_main',
-						'bulletsLeft',
-						'yourShots',
-						'enemyShots',
-						'yourMovement',
-						'enemyMovement',
-					],
+					attributes: {
+						code: `
+							return _attributes.call({});
+						`,
+						params: [
+							'_attributes',
+						],
+					},
+					run: {
+						code: `
+							return _main.call(
+								{},
+								bulletsLeft,
+								yourShots,
+								enemyShots,
+								yourMovement,
+								enemyMovement
+							);
+						`,
+						params: [
+							'_main',
+							'bulletsLeft',
+							'yourShots',
+							'enemyShots',
+							'yourMovement',
+							'enemyMovement',
+						],
+					},
 				});
 				if(compiledCode.compileError) {
 					entry.disqualified = true;
@@ -208,9 +217,9 @@ define([
 					const oldRandom = Math.random;
 					Math.random = this.random.floatGenerator();
 					try {
-						const attributes = compiledCode.initVal.attributes();
+						const attributes = compiledCode.fns.attributes();
 						this.applyAttributes(entry, attributes);
-						entry.mainFn = compiledCode.fn;
+						entry.mainFn = compiledCode.fns.run;
 						// Automatically un-disqualify entries when code is updated
 						entry.error = null;
 						entry.disqualified = false;

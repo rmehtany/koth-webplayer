@@ -83,7 +83,7 @@ define([
 			api[i] = {
 				color: ((v >>> SV_COLOUR_SHIFT) & COLOUR_BITS) + 1,
 				// Original challenge implementation uses ints, not bools, for food
-				food: Boolean(v & SV_FOOD) ? 1 : 0,
+				food: (v & SV_FOOD) ? 1 : 0,
 				ant: type ? {
 					type,
 					food: v >>> SV_ANT_FOOD_SHIFT,
@@ -265,11 +265,12 @@ define([
 			}
 			if(code !== null) {
 				const compiledCode = entryUtils.compile({}, {
-					runCode: code,
-					runParams: ['view'],
-					runStrict: true,
+					run: {
+						code: code,
+						params: ['view'],
+					},
 				});
-				entry.fn = compiledCode.fn;
+				entry.fn = compiledCode.fns.run;
 				if(compiledCode.compileError) {
 					entry.disqualified = true;
 					entry.error = compiledCode.compileError;

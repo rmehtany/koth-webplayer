@@ -1,12 +1,11 @@
 define([
 	'core/workerUtils',
-	'math/Random',
 	'path:./loaderWorker',
 ], (
 	workerUtils,
-	Random,
 	pathLoaderWorker
 ) => {
+	/* eslint-env worker */
 	'use strict';
 
 	/* jshint worker: true */
@@ -71,7 +70,7 @@ define([
 		}
 		const regex = new RegExp(varExpr.replace(/\*/g, '[a-zA-Z0-9_]*'), 'g');
 		const found = new Set();
-		while(true) {
+		for (;;) {
 			const p = regex.exec(code);
 			if(!p) {
 				break;
@@ -108,115 +107,47 @@ define([
 
 	return {
 		findCandidates,
-		compile: ({
+		buildFunctionFinder,
+		compile: function ({
 			initCode = '',
 			initParams = {},
 			initPre = '',
-			initStrict = false,
-			initReturning = null,
-		} = {}, {
-			runCode = '',
-			runParams = [],
-			runPre = '',
-			runStrict = false,
-			runReturning = null,
-		} = {}) => {
-			let runPost = '';
-			let initPost = '';
-
-			if (initReturning !== null) {
-				initPost = buildFunctionFinder(initCode, initReturning,
-					'self.initObj.', 'this.'
-				);
-			}
-
-			if (runReturning !== null) {
-				runPost = buildFunctionFinder(runCode, runReturning);
-			}
+			initSloppy = false,
+		} = {}, otherMethods = {}) {
+			const boilerplateBlock = `
+				const self = undefined;
+				const window = undefined;
+				const require = undefined;
+				const requireFactory = undefined;
+				const define = undefined;
+				const addEventListener = undefined;
+				const removeEventListener = undefined;
+				const postMessage = undefined;
+				const Date = undefined;
+				const performance = undefined;
+				const params = undefined;
+			`;
 
 			// Wrap code in function which blocks access to obviously dangerous
 			// globals (this wrapping cannot be relied on as there may be other
 			// ways to access global scope, but should prevent accidents - other
 			// measures must be used to prevent malice)
 			const buildSrc = ((`
-			{
 				self.initFn = function(params) {
-					${initStrict?'\'use strict\';':''}
+					${initSloppy?'':'\'use strict\';'}
 					${initPre};
 					self.initObj = new (function({
 						${Object.keys(initParams).join(',')}
 					}) {
-						const self = undefined;
-						const window = undefined;
-						const require = undefined;
-						const requireFactory = undefined;
-						const define = undefined;
-						const addEventListener = undefined;
-						const removeEventListener = undefined;
-						const postMessage = undefined;
-						const Date = undefined;
-						const performance = undefined;
-			`).replace(/(\r\n\t|\n|\r\t)/gm,"") + initCode + `
+						${boilerplateBlock}
+			`).replace(/(\r\n\t|\n|\r\t)/gm,'') + initCode + `
 					})(params);
-					${initPost}
 				};
-			}`);
+			`);
 
-			const runSrc = ((`{
-				self.runFn = function(params, extras) {
-					${runStrict?'\'use strict\';':''}
-					console = (extras.consoleTarget ?
-					((({consoleTarget, consoleLimit = 100, consoleItemLimit = 1024}) => {
-						const dolog = (type, values) => {
-							consoleTarget.push({
-								type,
-								value: Array.prototype.map.call(values, (v) => {
-									if(v && v.message) {
-										return String(v.message);
-									}
-									try {
-										return JSON.stringify(v);
-									} catch(e) {
-										return String(v);
-									}
-								}).join(" ").substr(0, consoleItemLimit),
-							});
-							if(consoleTarget.length > consoleLimit) {
-								consoleTarget.shift();
-							}
-						};
-						return {
-							clear: () => {consoleTarget.length = 0;},
-							info: function() {dolog("info", arguments);},
-							log: function() {dolog("log", arguments);},
-							warn: function() {dolog("warn", arguments);},
-							error: function() {dolog("error", arguments);},
-						};
-					})(extras)) : undefined);
-					${runPre}
-					extras = undefined;
-					return (({${runParams.join(',')}})=>{
-						const self = undefined;
-						const window = undefined;
-						const require = undefined;
-						const requireFactory = undefined;
-						const define = undefined;
-						const addEventListener = undefined;
-						const removeEventListener = undefined;
-						const postMessage = undefined;
-						const Date = undefined;
-						const performance = undefined;
-			`).replace(/(\r\n\t|\n|\r\t)/gm,"") + runCode + `;
-						${runPost}
-					}).call(params['this']||{}, params);
-				};
-			}`);
-
-			let initFn = null;
-			let runFn = null;
 			let compileError = null;
-			let initVal = undefined;
-			let fn;
+			let fns = {};
+			let initObj;
 
 			const begin = performance.now();
 			try {
@@ -224,47 +155,112 @@ define([
 					[buildSrc],
 					{type: 'text/javascript'}
 				)));
-				initFn = self.initFn.bind({});
-				importScripts(URL.createObjectURL(new Blob(
-					[runSrc],
-					{type: 'text/javascript'}
-				)));
-				runFn = self.runFn.bind({});
-				initVal = initFn(initParams);
-				let initObj = self.initObj;
-				fn = (params, extras) => runFn(
-					Object.assign({}, initObj, params),
-					extras
-				);
-			} catch(e) {
-				// WORKAROUND (Safari): blobs inaccessible when run
-				// from the filesystem, so fall-back to a nasty eval
+				self.initFn(initParams);
+				initObj = self.initObj;
+			} catch (e) {
 				if(e.toString().includes('DOM Exception 19')) {
 					try {
 						/* jshint evil: true */
 						eval(buildSrc);
-						initFn = self.initFn.bind({});
-						eval(runSrc);
-						runFn = self.runFn.bind({});
-						initVal = initFn(initParams);
-						let initObj = self.initObj;
-						fn = (params, extras) => runFn(
-							Object.assign({}, initObj, params),
-							extras
-						);
+						self.initFn(initParams);
+						initObj = self.initObj;
 					} catch(e2) {
-						compileError = stringifyCompileError(e2);
+						compileError = 'initialization: ' + stringifyCompileError(e2);
 					}
 				} else {
-					compileError = stringifyCompileError(e);
+					compileError = 'initialization: ' + stringifyCompileError(e);
 				}
 			}
 			self.initFn = null;
-			self.runFn = null;
+
+			for (let fnKey of Object.keys(otherMethods)) {
+				if (compileError) {
+					break;
+				}
+				let thing = otherMethods[fnKey];
+				let fnPre = thing.hasOwnProperty('pre')?thing.pre:'';
+				let fnCode = thing.hasOwnProperty('code')?thing.code:'';
+				let fnParams = thing.hasOwnProperty('params')?thing.params:[];
+				const runSrc = ((`
+					self.runFn = function(params, extras) {
+						${thing.sloppy?'':'\'use strict\';'}
+						console = (extras.consoleTarget ?
+						((({
+							consoleTarget,
+							consoleLimit = 100,
+							consoleItemLimit = 1024
+						}) => {
+							const dolog = (type, values) => {
+								consoleTarget.push({
+									type,
+									value: Array.prototype.map.call(values, (v) => {
+										if(v && v.message) {
+											return String(v.message);
+										}
+										try {
+											return JSON.stringify(v);
+										} catch(e) {
+											return String(v);
+										}
+									}).join(" ").substr(0, consoleItemLimit),
+								});
+								if(consoleTarget.length > consoleLimit) {
+									consoleTarget.shift();
+								}
+							};
+							return {
+								clear: () => {consoleTarget.length = 0;},
+								info: function() {dolog("info", arguments);},
+								log: function() {dolog("log", arguments);},
+								warn: function() {dolog("warn", arguments);},
+								error: function() {dolog("error", arguments);},
+							};
+						})(extras)) : undefined);
+						${fnPre}
+						extras = undefined;
+						return (({${fnParams.join(',')}})=>{
+							${boilerplateBlock}
+						`).replace(/(\r\n\t|\n|\r\t)/gm, '') +
+							`${fnCode};
+						}).call(params['this']||{}, params);
+					};
+				`);
+				try {
+					importScripts(URL.createObjectURL(new Blob(
+						[runSrc],
+						{type: 'text/javascript'}
+					)));
+					let runFn = self.runFn;
+					fns[fnKey] = (params={}, extras={}) => {
+						return runFn.apply({}, [
+							Object.assign({}, initObj, params),
+							extras,
+						]);
+					};
+				} catch (e) {
+					if(e.toString().includes('DOM Exception 19')) {
+						try {
+							/* jshint evil: true */
+							eval(runSrc);
+							let runFn = self.runFn;
+							fns[fnKey] = (params={}, extras={}) => runFn.apply({}, [
+								Object.assign({}, initObj, params),
+								extras,
+							]);
+						} catch(e2) {
+							compileError = fnKey + ': ' + stringifyCompileError(e2);
+						}
+					} else {
+						compileError = fnKey + ': ' + stringifyCompileError(e);
+					}
+				}
+				self.runFn = null;
+			}
+
 			self.initObj = null;
 			const compileTime = performance.now() - begin;
 
-			return {fn, compileError, compileTime, initVal};
+			return {fns, compileError, compileTime};
 		},
 
 		stringifyEntryError,

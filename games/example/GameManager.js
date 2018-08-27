@@ -61,27 +61,86 @@ define([
 				throw new Error('Attempt to modify an entry which was not registered in the game');
 			}
 			if(code !== null) {
+				/*
+				entryUtils.compile accepts two arguments, and returns an
+				object which encapsulates an entry and exposes the methods
+				specified in the arguments as a means of interacting
+				with the entry.
+				*/
 				const compiledCode = entryUtils.compile({
-					// Code to execute one, before the game actually begins
-					// Here, it's used merely to replace Math.random,
-					// but you can do lots of other things with it
-					initCode: 'Math.random = MathRandom; /* More init stuff here */',
-					//These parameter names match the key values given to the
-					//initializing code
-					initParams: {
-						MathRandom: this.random.floatGenerator(),
-						OtherParams: 'can be put here as well',
+					/*
+					The first argument is an object of the form:
+					{
+						initPre: String to execute as code before main initialization.
+							It possesses a view of both params and extras as objects,
+							and has full access to the outside environment. Submission
+							code does NOT go here.
+						initCode: String to execute as initialization code. It possesses a
+							full view of the params object. An attempt is made to keep
+							it from viewing extras or the outside environment, but though
+							confinement is good, it probably isn't perfect.
+						initParams: Named parameter list to feed both initPre and initCode.
+						initExtras: Named parameter list to feed initPre, but not initCode.
+						initSloppy: By default, strict mode is enforced for initialization
+							code. Set this to a truthy value to disable this and allow
+							sloppy-mode code. Not recommended for new competitions, as
+							sloppy-mode code is slower and more insecure than its
+							strict-mode counterpart.
 					}
+					This defines a constructor for an object which is later used
+					as a source of default property values for the other functions. To
+					assign to this object, use statements of the form "this.foo = bar"
+					inside the initCode string.
+
+					The given example assigns extra.MathRandom to Math.random, but
+					numerous other things can be done with initialization code.
+					*/
+					initPre: `
+						Math.random = extras.MathRandom;
+					`,
+					initCode: `
+						this.foo = bar;
+						this.baz = quux;
+					`,
+					initParams: {
+						bar: 'barstr',
+						quux: {a: 3, b: 4,},
+					},
+					initExtras: {
+						MathRandom: this.random.floatGenerator(),
+					},
 				}, {
-					// Code to run every turn as part of the game
-					runCode: code,
-					// These parameter names match the key values given to fn() in
-					// step(type) below
-					runParams: [
-						'my',
-						'parameters',
-						'here',
-					]
+					/*
+					The second argument is an object which has any number of named
+					properties, each of which have a value of the form:
+					{
+						pre: String to execute before the main code. It can access
+							params and extras as objects, and has full access to the
+							outside environment. Submission code does NOT go here.
+						code: String to execute as main code. It can see specified
+							params. An attempt is made to keep it from viewing
+							extras or the outside environment, but though confinement
+							is good, it probably isn't perfect.
+						params: List of string params to make available to the method.
+							Params are first derived from the fed params object, then
+							from the object constructed from initialization.
+						strict: By default, methods are executed under strict mode.
+							Set this to a truthy value to disable this and allow for
+							sloppy-mode code. Not recommended for new competitions.
+					}
+					If compilation succeeds, then fns is a full list of methods, which,
+					when called, execute the code specified. If it fails, then
+					fns will probably be incomplete, and compileError will give information
+					about the first method to fail compilation.
+					*/
+					run: {
+						code: code,
+						params: [
+							'my',
+							'parameters',
+							'here',
+						],
+					},
 				});
 				entry.fn = compiledCode.fn;
 				if(compiledCode.compileError) {

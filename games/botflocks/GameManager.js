@@ -40,6 +40,7 @@ define([
 	}
 
 	function makeAPIExtras(entry, {console}, {width, height, board, visibilityDist}) {
+		let sendSet = new Set();
 		let sendGrid = [];
 		entry.bots.forEach((bot) => {
 			//For whatever reason, the board is stored in column-major order
@@ -56,7 +57,10 @@ define([
 					} else if (dx+bot.x >= width) {
 						break;
 					}
-					sendGrid.push([bot.x+dx, bot.y+dy, board[(bot.y+dy)*width+bot.x+dx]]);
+					if (!sendSet.has(`${bot.x+dx}/${bot.y+dy}`)) {
+						sendGrid.push([bot.x+dx, bot.y+dy, board[(bot.y+dy)*width+bot.x+dx]]);
+						sendSet.add(`${bot.x+dx}/${bot.y+dy}`);
+					}
 				}
 			}
 		});
@@ -183,39 +187,46 @@ define([
 						MathRandom: this.random.floatGenerator(),
 						prevMem,
 					},
-					initReturning: {
-						getMem: 'getMem'
-					},
 				}, {
-					runCode: code,
-					runParams: [
-						'p1',
-						'id',
-						'eid',
-						'move',
-						'goal',
-						'bots',
-						'ebots',
-						'getMem',
-						'setMem',
-					],
-					runPre: `
-						let gridMap = new Map();
-						extras.gridView.forEach((ent) => {
-							let key = ent[0] + "/" + ent[1];
-							if (!gridMap.has(key)) {
-								gridMap.set(key, ent[2]);
-							}
-						});
-						let grid = (x, y) => {
-							let key = x + "/" + y;
-							let testVal = gridMap.get(key);
-							return (testVal === undefined)?-1:testVal;
-						};
-					`
+					run: {
+						code: code,
+						params: [
+							'p1',
+							'id',
+							'eid',
+							'move',
+							'goal',
+							'bots',
+							'ebots',
+							'getMem',
+							'setMem',
+						],
+						pre: `
+							let gridArray = [];
+							extras.gridView.forEach((ent) => {
+								if (!gridArray.hasOwnProperty(ent[0])) {
+									gridArray[ent[0]] = [];
+								}
+								gridArray[ent[0]][ent[1]] = ent[2];
+							});
+							let grid = (x, y) => {
+								let testValEnt = gridArray[x];
+								let testVal = testValEnt?testValEnt[y]:undefined;
+								return (testVal === undefined)?-1:testVal;
+							};
+						`,
+					},
+					getMem: {
+						code: `
+							return getMem();
+						`,
+						params: [
+							'getMem',
+						],
+					},
 				});
-				entry.fn = compiledCode.fn;
-				entry.getMem = compiledCode.initVal.getMem;
+				entry.fn = compiledCode.fns.run;
+				entry.getMem = compiledCode.fns.getMem;
 				if(compiledCode.compileError) {
 					entry.disqualified = true;
 					entry.error = compiledCode.compileError;
@@ -257,7 +268,7 @@ define([
 		pickNewGoal() {
 			let x = 0;
 			let y = 0;
-			while(true) {
+			for (;;) {
 				const p = this.random.next(this.width * this.height);
 				x = p % this.width;
 				y = Math.floor(p / this.width);

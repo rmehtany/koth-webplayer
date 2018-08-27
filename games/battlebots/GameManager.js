@@ -28,23 +28,11 @@ define([
 		],
 	};
 
-	function makeAPIParams(bot, entry, params) {
-		return Object.assign({
-			setMsg: (msg) => {
-				if(typeof msg === 'string') {
-					msg = msg.substr(0, 64);
-					params.messages[entry.userID] = bot.message = msg;
-				}
-			},
-			getMsg: (id) => {
-				return params.messages[id];
-			},
-		}, params);
-	}
-
-	function makeAPIExtras({console}) {
+	function makeAPIExtras({console, entry, params}) {
 		return {
 			consoleTarget: console,
+			messages: params.messages,
+			id: entry.userID,
 		};
 	}
 
@@ -140,26 +128,43 @@ define([
 					initCode: 'Math.random = MathRandom;',
 					initParams: {
 						MathRandom: this.random.floatGenerator(),
-					}
+					},
 				}, {
-					runPre: `
-						let setMessage = params.setMsg;
-						let getMessage = params.getMsg;
-					`,
-					runCode: code,
-					runParams: [
-						'move',
-						'x',
-						'y',
-						'tCount',
-						'eCount',
-						'tNear',
-						'eNear',
-						'setMsg',
-						'getMsg',
-					],
+					run: {
+						pre: `
+							let messages = extras.messages;
+							let _id = extras.id;
+							let setMsg = (msg) => {
+								if(typeof msg === 'string') {
+									messages[_id] = msg.substr(0, 64);
+								}
+							};
+							let getMsg = (id) => {
+								return messages[id];
+							};
+							let setMessage = setMsg;
+							let getMessage = getMsg;
+						`,
+						code: `
+							let action = (()=>{${code}})();
+							return {
+								action,
+								message: getMsg(_id)
+							};
+						`,
+						params: [
+							'move',
+							'x',
+							'y',
+							'tCount',
+							'eCount',
+							'tNear',
+							'eNear',
+						],
+						sloppy: true,
+					},
 				});
-				entry.fn = compiledCode.fn;
+				entry.fn = compiledCode.fns.run;
 				if(compiledCode.compileError) {
 					entry.disqualified = true;
 					entry.error = compiledCode.compileError;
@@ -292,16 +297,21 @@ define([
 			let error = null;
 			let elapsed = 0;
 			let action = null;
+			let newMessage = '';
 
 			const oldRandom = Math.random;
 			try {
 				const begin = performance.now();
-				action = entry.fn(
-					makeAPIParams(bot, entry, params),
+				let combination = entry.fn(
+					params,
 					makeAPIExtras({
+						entry,
+						params,
 						console: entry.console,
 					})
 				);
+				action = combination.action;
+				newMessage = combination.message;
 				elapsed = performance.now() - begin;
 
 				error = checkError(action, elapsed);
@@ -316,6 +326,7 @@ define([
 			if(error) {
 				this.handleError(entry, params, action, error);
 			} else {
+				params.messages[entry.userID] = bot.message = newMessage;
 				this.moveBot(bot, action);
 			}
 			++ bot.moves;

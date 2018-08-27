@@ -163,57 +163,55 @@ define([
 			}
 			if(code !== null) {
 				//Find the two entry function names
-				let setupFind = [...entryUtils.findCandidates(
-					code,
-					'function *_setup'
-				)];
-				let getActFind = [...entryUtils.findCandidates(
-					code,
-					'function *_getActions'
-				)];
-				let compiledCode;
-				if (setupFind.length === 0 || getActFind.length === 0) {
-					compiledCode = {
-						compileError: 'Could not find valid setup or getActions function',
-					};
-				} else {
-					compiledCode = entryUtils.compile({
-						initPre: `
-							Math.degrees = x => x*180/Math.PI;
-							let LineIntersection = ([a1, a2], [b1, b2]) => {
-								const s1 = [a2[0]-a1[0], a2[1]-a1[1]];
-								const s2 = [b2[0]-b1[0], b2[1]-b1[1]];
-								const d = [b1[0]-a1[0], b1[1]-a1[1]];
-								const norm = 1/(s1[0]*s2[1] - s1[1]*s2[0]);
-								const f1 = (d[0]*s2[1] - d[1]*s2[0])*norm;
-								const f2 = (d[0]*s1[1] - d[1]*s1[0])*norm;
-								const i = f1 >= 0 && f1 <= 1 && f2 >= 0 && f2 <= 1;
-								return i?[
-									[a1[0]+b1[0]*f1, a1[1]+b1[1]*f1],
-									[f1, f2]
-								]:[];
-							};
-						`,
-						initCode: `
-							${code}
-							this.shipShapes = _s;
-							this._lInter = LineIntersection;
-							this._setup = ${setupFind[0].slice(9)}.bind({});
-							this._getActions = ${getActFind[0].slice(9)}.bind({});
-						`,
-						initParams: {
-							_s: {
-								'full ship': this.config.shapes.all,
-								'left wing': this.config.shapes.noseLeftWing,
-								'right wing': this.config.shapes.noseRightWing,
-								'nose only': this.config.shapes.nose,
-							},
+				let finder = entryUtils.buildFunctionFinder(code, {
+					setup: '*_setup',
+					getActions: '*_getActions',
+				});
+				let compiledCode = entryUtils.compile({
+					initPre: `
+						Math.degrees = x => x*180/Math.PI;
+						let LineIntersection = ([a1, a2], [b1, b2]) => {
+							const s1 = [a2[0]-a1[0], a2[1]-a1[1]];
+							const s2 = [b2[0]-b1[0], b2[1]-b1[1]];
+							const d = [b1[0]-a1[0], b1[1]-a1[1]];
+							const norm = 1/(s1[0]*s2[1] - s1[1]*s2[0]);
+							const f1 = (d[0]*s2[1] - d[1]*s2[0])*norm;
+							const f2 = (d[0]*s1[1] - d[1]*s1[0])*norm;
+							const i = f1 >= 0 && f1 <= 1 && f2 >= 0 && f2 <= 1;
+							return i?[
+								[a1[0]+b1[0]*f1, a1[1]+b1[1]*f1],
+								[f1, f2]
+							]:[];
+						};
+						let shipShapes = params.shipShapes;
+					`,
+					initCode: `
+						${code}
+						let {setup, getActions} = (()=>{
+							${finder}
+						})();
+						this._setup = setup;
+						this._getActions = getActions;
+					`,
+					initParams: {
+						shipShapes: {
+							'full ship': this.config.shapes.all,
+							'left wing': this.config.shapes.noseLeftWing,
+							'right wing': this.config.shapes.noseRightWing,
+							'nose only': this.config.shapes.nose,
 						},
-						initReturning: {
-							setup: '_setup',
-						}
-					}, {
-						runPre: `
+					},
+					initSloppy: true,
+				}, {
+					setup: {
+						code: 'return _setup(team)',
+						params: [
+							'_setup',
+							'team',
+						],
+					},
+					getActions: {
+						pre: `
 							let _shipCoords = extras.shipCoords;
 							let getShipCoords = function(color) {
 								if (color === 'red') {
@@ -222,18 +220,15 @@ define([
 									return _shipCoords.blue;
 								}
 							};
-							let LineIntersection = params._lInter;
 						`,
-						runCode: `return _getActions(gameInfo, botVars)`,
-						runParams: [
+						code: 'return _getActions(gameInfo, botVars)',
+						params: [
 							'_getActions',
-							'shipShapes',
-							'_lInter',
 							'gameInfo',
 							'botVars',
 						],
-					});
-				}
+					},
+				});
 				if(compiledCode.compileError) {
 					entry.disqualified = true;
 					entry.error = compiledCode.compileError;
@@ -242,8 +237,8 @@ define([
 					Math.random = this.random.floatGenerator();
 					try {
 						const team = teamForSide(entry.side);
-						entry.vars = compiledCode.initVal.setup.call({}, team);
-						entry.fn = compiledCode.fn;
+						entry.vars = compiledCode.fns.setup.call({}, team);
+						entry.fn = compiledCode.fns.getActions;
 						// Automatically un-disqualify entries when code is updated
 						entry.error = null;
 						entry.disqualified = false;
@@ -412,13 +407,13 @@ define([
 				const begin = performance.now();
 				action = entry.fn.call({}, {
 					gameInfo,
-					botVars: entry.newVars
+					botVars: entry.newVars,
 				}, {
 					consoleTarget: this.console,
 					shipCoords: {
 						red: this.entryGetShipCoords(entry.id, 'red'),
 						blue: this.entryGetShipCoords(entry.id, 'blue'),
-					}
+					},
 				});
 				elapsed = performance.now() - begin;
 
