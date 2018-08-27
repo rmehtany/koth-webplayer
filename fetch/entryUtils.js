@@ -1,8 +1,10 @@
 define([
 	'core/workerUtils',
+	'math/Random',
 	'path:./loaderWorker',
 ], (
 	workerUtils,
+	Random,
 	pathLoaderWorker
 ) => {
 	'use strict';
@@ -79,20 +81,21 @@ define([
 		return found;
 	}
 
-	function buildFunctionFinder(code, returning) {
+	function buildFunctionFinder(code, returning, putPrefix='', searchPrefix='') {
 		let parts = '';
-		for(let k in returning) {
+		for(let k of Object.keys(returning)) {
 			if(!returning.hasOwnProperty(k)) {
 				continue;
 			}
 			parts += JSON.stringify(k) + ':';
-			const vars = findCandidates(code, returning[k]);
+			const vars = findCandidates(code, searchPrefix+returning[k]);
 			if(vars.size === 1) {
-				parts += vars.values().next().value;
+				parts += putPrefix+vars.values().next().value.slice(searchPrefix.length);
 			} else if(vars.size > 1) {
 				parts += (
 					'((() => {' +
-					vars.map((v) => 'try {return ' + v + ';} catch(e) {}').join('') +
+						vars.map((v) => 'try {return ' +
+						putPrefix+v.slice(searchPrefix.length) + ';} catch(e) {}').join('') +
 					'})())'
 				);
 			} else {
@@ -104,87 +107,151 @@ define([
 	}
 
 	return {
-		compile: (code, parameters, {pre = '', returning = null} = {}) => {
-			let after = '';
-			if(returning !== null) {
-				after = buildFunctionFinder(code, returning);
+		findCandidates,
+		compile: ({
+			initCode = '',
+			initParams = {},
+			initPre = '',
+			initStrict = false,
+			initReturning = null,
+		} = {}, {
+			runCode = '',
+			runParams = [],
+			runPre = '',
+			runStrict = false,
+			runReturning = null,
+		} = {}) => {
+			let runPost = '';
+			let initPost = '';
+
+			if (initReturning !== null) {
+				initPost = buildFunctionFinder(initCode, initReturning,
+					'self.initObj.', 'this.'
+				);
+			}
+
+			if (runReturning !== null) {
+				runPost = buildFunctionFinder(runCode, runReturning);
 			}
 
 			// Wrap code in function which blocks access to obviously dangerous
 			// globals (this wrapping cannot be relied on as there may be other
 			// ways to access global scope, but should prevent accidents - other
 			// measures must be used to prevent malice)
-			const src = (
-				// All prelude is rendered on 1 line so that line numbers in
-				// reported errors are easy to rectify
-				'"use strict";' +
-				'self.tempFn = function(parameters, extras) {' +
-					'const self = undefined;' +
-					'const window = undefined;' +
-					'const require = undefined;' +
-					'const requireFactory = undefined;' +
-					'const define = undefined;' +
-					'const addEventListener = undefined;' +
-					'const removeEventListener = undefined;' +
-					'const postMessage = undefined;' +
-					'const Date = undefined;' +
-					'const performance = undefined;' +
-					'const console = (extras.consoleTarget ?' +
-					'((({consoleTarget, consoleLimit = 100, consoleItemLimit = 1024}) => {' +
-						'const dolog = (type, values) => {' +
-							'consoleTarget.push({' +
-								'type,' +
-								'value: Array.prototype.map.call(values, (v) => {' +
-									'if(v && v.message) {' +
-										'return String(v.message);' +
-									'}' +
-									'try {' +
-										'return JSON.stringify(v);' +
-									'} catch(e) {' +
-										'return String(v);' +
-									'}' +
-								'}).join(" ").substr(0, consoleItemLimit),' +
-							'});' +
-							'if(consoleTarget.length > consoleLimit) {' +
-								'consoleTarget.shift();' +
-							'}' +
-						'};' +
-						'return {' +
-							'clear: () => {consoleTarget.length = 0;},' +
-							'info: function() {dolog("info", arguments);},' +
-							'log: function() {dolog("log", arguments);},' +
-							'warn: function() {dolog("warn", arguments);},' +
-							'error: function() {dolog("error", arguments);},' +
-						'};' +
-					'})(extras)) : undefined);' +
-					pre +
-					'extras = undefined;' +
-					'return (function({' + parameters.join(',') + '}) {\n' +
-						code + '\n' + after +
-					'}).call(parameters["this"] || {}, parameters);' +
-				'};\n'
-			);
+			const buildSrc = ((`
+			{
+				self.initFn = function(params) {
+					${initStrict?'\'use strict\';':''}
+					${initPre};
+					self.initObj = new (function({
+						${Object.keys(initParams).join(',')}
+					}) {
+						const self = undefined;
+						const window = undefined;
+						const require = undefined;
+						const requireFactory = undefined;
+						const define = undefined;
+						const addEventListener = undefined;
+						const removeEventListener = undefined;
+						const postMessage = undefined;
+						const Date = undefined;
+						const performance = undefined;
+			`).replace(/(\r\n\t|\n|\r\t)/gm,"") + initCode + `
+					})(params);
+					${initPost}
+				};
+			}`);
 
-			let fn = null;
+			const runSrc = ((`{
+				self.runFn = function(params, extras) {
+					${runStrict?'\'use strict\';':''}
+					console = (extras.consoleTarget ?
+					((({consoleTarget, consoleLimit = 100, consoleItemLimit = 1024}) => {
+						const dolog = (type, values) => {
+							consoleTarget.push({
+								type,
+								value: Array.prototype.map.call(values, (v) => {
+									if(v && v.message) {
+										return String(v.message);
+									}
+									try {
+										return JSON.stringify(v);
+									} catch(e) {
+										return String(v);
+									}
+								}).join(" ").substr(0, consoleItemLimit),
+							});
+							if(consoleTarget.length > consoleLimit) {
+								consoleTarget.shift();
+							}
+						};
+						return {
+							clear: () => {consoleTarget.length = 0;},
+							info: function() {dolog("info", arguments);},
+							log: function() {dolog("log", arguments);},
+							warn: function() {dolog("warn", arguments);},
+							error: function() {dolog("error", arguments);},
+						};
+					})(extras)) : undefined);
+					${runPre}
+					extras = undefined;
+					return (({${runParams.join(',')}})=>{
+						const self = undefined;
+						const window = undefined;
+						const require = undefined;
+						const requireFactory = undefined;
+						const define = undefined;
+						const addEventListener = undefined;
+						const removeEventListener = undefined;
+						const postMessage = undefined;
+						const Date = undefined;
+						const performance = undefined;
+			`).replace(/(\r\n\t|\n|\r\t)/gm,"") + runCode + `;
+						${runPost}
+					}).call(params['this']||{}, params);
+				};
+			}`);
+
+			let initFn = null;
+			let runFn = null;
 			let compileError = null;
+			let initVal = undefined;
+			let fn;
 
 			const begin = performance.now();
 			try {
 				importScripts(URL.createObjectURL(new Blob(
-					[src],
+					[buildSrc],
 					{type: 'text/javascript'}
 				)));
-				fn = self.tempFn.bind({});
-				self.tempFn = null;
+				initFn = self.initFn.bind({});
+				importScripts(URL.createObjectURL(new Blob(
+					[runSrc],
+					{type: 'text/javascript'}
+				)));
+				runFn = self.runFn.bind({});
+				initVal = initFn(initParams);
+				let initObj = self.initObj;
+				fn = (params, extras) => runFn(
+					Object.assign({}, initObj, params),
+					extras
+				);
 			} catch(e) {
 				// WORKAROUND (Safari): blobs inaccessible when run
 				// from the filesystem, so fall-back to a nasty eval
 				if(e.toString().includes('DOM Exception 19')) {
 					try {
 						/* jshint evil: true */
-						eval(src);
-						fn = self.tempFn.bind({});
-						self.tempFn = null;
+						eval(buildSrc);
+						initFn = self.initFn.bind({});
+						eval(runSrc);
+						runFn = self.runFn.bind({});
+						initVal = initFn(initParams);
+						let initObj = self.initObj;
+						fn = (params, extras) => runFn(
+							Object.assign({}, initObj, params),
+							extras
+						);
 					} catch(e2) {
 						compileError = stringifyCompileError(e2);
 					}
@@ -192,9 +259,12 @@ define([
 					compileError = stringifyCompileError(e);
 				}
 			}
+			self.initFn = null;
+			self.runFn = null;
+			self.initObj = null;
 			const compileTime = performance.now() - begin;
 
-			return {fn, compileError, compileTime};
+			return {fn, compileError, compileTime, initVal};
 		},
 
 		stringifyEntryError,

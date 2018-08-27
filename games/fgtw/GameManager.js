@@ -178,11 +178,29 @@ define([
 				throw new Error('Attempt to modify an entry which was not registered in the game');
 			}
 			if(code !== null) {
-				const compiledCode = entryUtils.compile(
-					code,
-					[],
-					{returning: {attributes: 'attributes', main: 'main'}}
-				);
+				const compiledCode = entryUtils.compile({
+					initCode: code,
+					initReturning: {attributes: '_attributes'},
+				}, {
+					runCode: `
+						return _main.call(
+							{},
+							bulletsLeft,
+							yourShots,
+							enemyShots,
+							yourMovement,
+							enemyMovement
+						);
+					`,
+					runParams: [
+						'_main',
+						'bulletsLeft',
+						'yourShots',
+						'enemyShots',
+						'yourMovement',
+						'enemyMovement',
+					],
+				});
 				if(compiledCode.compileError) {
 					entry.disqualified = true;
 					entry.error = compiledCode.compileError;
@@ -190,10 +208,9 @@ define([
 					const oldRandom = Math.random;
 					Math.random = this.random.floatGenerator();
 					try {
-						const functions = compiledCode.fn({}, {});
-						const attributes = functions.attributes.call({});
+						const attributes = compiledCode.initVal.attributes();
 						this.applyAttributes(entry, attributes);
-						entry.mainFn = functions.main;
+						entry.mainFn = compiledCode.fn;
 						// Automatically un-disqualify entries when code is updated
 						entry.error = null;
 						entry.disqualified = false;
@@ -262,16 +279,8 @@ define([
 			Math.random = this.random.floatGenerator();
 			try {
 				const begin = performance.now();
-				action = entry.mainFn.call(
-					{},
-					params.bulletsLeft,
-					params.yourShots,
-					params.enemyShots,
-					params.yourMovement,
-					params.enemyMovement
-				);
+				action = entry.mainFn(params, {});
 				elapsed = performance.now() - begin;
-
 				error = checkError(action);
 			} catch(e) {
 				error = entryUtils.stringifyEntryError(e);

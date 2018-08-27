@@ -61,13 +61,28 @@ define([
 				throw new Error('Attempt to modify an entry which was not registered in the game');
 			}
 			if(code !== null) {
-				// These parameter names match the key values given to fn() in
-				// step(type) below
-				const compiledCode = entryUtils.compile(code, [
-					'my',
-					'parameters',
-					'here',
-				]);
+				const compiledCode = entryUtils.compile({
+					// Code to execute one, before the game actually begins
+					// Here, it's used merely to replace Math.random,
+					// but you can do lots of other things with it
+					initCode: 'Math.random = MathRandom; /* More init stuff here */',
+					//These parameter names match the key values given to the
+					//initializing code
+					initParams: {
+						MathRandom: this.random.floatGenerator(),
+						OtherParams: 'can be put here as well',
+					}
+				}, {
+					// Code to run every turn as part of the game
+					runCode: code,
+					// These parameter names match the key values given to fn() in
+					// step(type) below
+					runParams: [
+						'my',
+						'parameters',
+						'here',
+					]
+				});
 				entry.fn = compiledCode.fn;
 				if(compiledCode.compileError) {
 					entry.disqualified = true;
@@ -142,8 +157,9 @@ define([
 			let elapsed = 0;
 
 			try {
-				// For an example of how to allow competitors to use Math.random
-				// without becoming non-deterministic, see battlebots/botflocks
+				// A deterministic Math.random can be introduced by
+				// reassigning it during initialization. See above if
+				// you missed it the first time.
 				const begin = performance.now();
 				action = entry.fn(params, {consoleTarget: entry.console});
 				elapsed = performance.now() - begin;

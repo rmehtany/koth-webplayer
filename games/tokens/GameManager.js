@@ -93,19 +93,25 @@ define([
 
 		updateEntry({id, code = null, pauseOnError = null, disqualified = null}) {
 			const entry = this.entryLookup.get(id);
+			entry.code = code;
 			if(!entry) {
 				throw new Error('Attempt to modify an entry which was not registered in the game');
 			}
 			if(code !== null) {
-				const compiledCode = entryUtils.compile(
-					'return new (' +
-					(code
-						.replace(/^[^\/]*?((?=function)|\()/, '')
-						.replace(/;[ \t\r\n]*$/, '')
-					) +
-					')(first);',
-					['first']
-				);
+				const compiledCode = entryUtils.compile({
+					initCode: `
+						this._obj = new (${code
+							.replace(/^[^\/]*?((?=function)|\()/, '')
+							.replace(/;[ \t\r\n]*$/, '')
+						})(first);
+					`,
+					initParams: {
+						first: entry.first,
+					},
+				}, {
+					runCode: 'return _obj.yourMove(b)',
+					runParams: ['_obj', 'b'],
+				});
 				if(compiledCode.compileError) {
 					entry.disqualified = true;
 					entry.error = compiledCode.compileError;
@@ -113,7 +119,7 @@ define([
 					const oldRandom = Math.random;
 					Math.random = this.random.floatGenerator();
 					try {
-						entry.obj = compiledCode.fn({first: entry.first}, {});
+						entry.fn = compiledCode.fn;
 						// Automatically un-disqualify entries when code is updated
 						entry.error = null;
 						entry.disqualified = false;
@@ -262,9 +268,8 @@ define([
 			Math.random = this.random.floatGenerator();
 			try {
 				const begin = performance.now();
-				action = entry.obj.yourMove(params);
+				action = entry.fn({b: params}, {});
 				elapsed = performance.now() - begin;
-
 				error = checkError(action);
 			} catch(e) {
 				error = entryUtils.stringifyEntryError(e);

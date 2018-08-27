@@ -57,23 +57,6 @@ define([
 		));
 	}
 
-	function lineIntersection(l1, l2) {
-		const result = new LineSegment(
-			new vector.V2(l1[0].x, l1[0].y),
-			new vector.V2(l1[1].x, l1[1].y)
-		).findLineIntersection(new LineSegment(
-			new vector.V2(l2[0].x, l2[0].y),
-			new vector.V2(l2[1].x, l2[1].y)
-		));
-		if(!result.intersection) {
-			return [];
-		}
-		return [
-			[result.intersection.x, result.intersection.y],
-			[result.fraction1, result.fraction2],
-		];
-	}
-
 	function shipHealth(entry) {
 		return (entry.leftWing ?
 			(entry.rightWing ? 'full ship' : 'left wing') :
@@ -179,14 +162,78 @@ define([
 				throw new Error('Attempt to modify an entry which was not registered in the game');
 			}
 			if(code !== null) {
-				const compiledCode = entryUtils.compile(
+				//Find the two entry function names
+				let setupFind = [...entryUtils.findCandidates(
 					code,
-					['shipShapes', 'LineIntersection', 'getShipCoords'],
-					{returning: {
-						setup: '*_setup',
-						actions: '*_getActions',
-					}}
-				);
+					'function *_setup'
+				)];
+				let getActFind = [...entryUtils.findCandidates(
+					code,
+					'function *_getActions'
+				)];
+				let compiledCode;
+				if (setupFind.length === 0 || getActFind.length === 0) {
+					compiledCode = {
+						compileError: 'Could not find valid setup or getActions function',
+					};
+				} else {
+					compiledCode = entryUtils.compile({
+						initPre: `
+							Math.degrees = x => x*180/Math.PI;
+							let LineIntersection = ([a1, a2], [b1, b2]) => {
+								const s1 = [a2[0]-a1[0], a2[1]-a1[1]];
+								const s2 = [b2[0]-b1[0], b2[1]-b1[1]];
+								const d = [b1[0]-a1[0], b1[1]-a1[1]];
+								const norm = 1/(s1[0]*s2[1] - s1[1]*s2[0]);
+								const f1 = (d[0]*s2[1] - d[1]*s2[0])*norm;
+								const f2 = (d[0]*s1[1] - d[1]*s1[0])*norm;
+								const i = f1 >= 0 && f1 <= 1 && f2 >= 0 && f2 <= 1;
+								return i?[
+									[a1[0]+b1[0]*f1, a1[1]+b1[1]*f1],
+									[f1, f2]
+								]:[];
+							};
+						`,
+						initCode: `
+							${code}
+							this.shipShapes = _s;
+							this._lInter = LineIntersection;
+							this._setup = ${setupFind[0].slice(9)}.bind({});
+							this._getActions = ${getActFind[0].slice(9)}.bind({});
+						`,
+						initParams: {
+							_s: {
+								'full ship': this.config.shapes.all,
+								'left wing': this.config.shapes.noseLeftWing,
+								'right wing': this.config.shapes.noseRightWing,
+								'nose only': this.config.shapes.nose,
+							},
+						},
+						initReturning: {
+							setup: '_setup',
+						}
+					}, {
+						runPre: `
+							let _shipCoords = extras.shipCoords;
+							let getShipCoords = function(color) {
+								if (color === 'red') {
+									return _shipCoords.red;
+								} else if (color === 'blue') {
+									return _shipCoords.blue;
+								}
+							};
+							let LineIntersection = params._lInter;
+						`,
+						runCode: `return _getActions(gameInfo, botVars)`,
+						runParams: [
+							'_getActions',
+							'shipShapes',
+							'_lInter',
+							'gameInfo',
+							'botVars',
+						],
+					});
+				}
 				if(compiledCode.compileError) {
 					entry.disqualified = true;
 					entry.error = compiledCode.compileError;
@@ -194,19 +241,9 @@ define([
 					const oldRandom = Math.random;
 					Math.random = this.random.floatGenerator();
 					try {
-						const functions = compiledCode.fn({
-							shipShapes: {
-								'full ship': this.config.shapes.all,
-								'left wing': this.config.shapes.noseLeftWing,
-								'right wing': this.config.shapes.noseRightWing,
-								'nose only': this.config.shapes.nose,
-							},
-							LineIntersection: lineIntersection,
-							getShipCoords: this.entryGetShipCoords.bind(this, id),
-						}, {consoleTarget: entry.console});
 						const team = teamForSide(entry.side);
-						entry.vars = functions.setup.call({}, team);
-						entry.fn = functions.actions;
+						entry.vars = compiledCode.initVal.setup.call({}, team);
+						entry.fn = compiledCode.fn;
 						// Automatically un-disqualify entries when code is updated
 						entry.error = null;
 						entry.disqualified = false;
@@ -373,7 +410,16 @@ define([
 			Math.degrees = (rad) => (rad * 180 / Math.PI);
 			try {
 				const begin = performance.now();
-				action = entry.fn.call({}, gameInfo, entry.newVars);
+				action = entry.fn.call({}, {
+					gameInfo,
+					botVars: entry.newVars
+				}, {
+					consoleTarget: this.console,
+					shipCoords: {
+						red: this.entryGetShipCoords(entry.id, 'red'),
+						blue: this.entryGetShipCoords(entry.id, 'blue'),
+					}
+				});
 				elapsed = performance.now() - begin;
 
 				error = checkError(action);

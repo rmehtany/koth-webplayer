@@ -42,10 +42,9 @@ define([
 		}, params);
 	}
 
-	function makeAPIExtras({console, random}) {
+	function makeAPIExtras({console}) {
 		return {
 			consoleTarget: console,
-			MathRandom: random.floatGenerator(),
 		};
 	}
 
@@ -137,17 +136,25 @@ define([
 				throw new Error('Attempt to modify an entry which was not registered in the game');
 			}
 			if(code !== null) {
-				const compiledCode = entryUtils.compile(code, [
-					'move',
-					'x',
-					'y',
-					'tCount',
-					'eCount',
-					'tNear',
-					'eNear',
-					'setMsg',
-					'getMsg',
-				], {pre: 'Math.random = extras.MathRandom;'});
+				const compiledCode = entryUtils.compile({
+					initCode: 'Math.random = MathRandom;',
+					initParams: {
+						MathRandom: this.random.floatGenerator(),
+					}
+				}, {
+					runCode: code,
+					runParams: [
+						'move',
+						'x',
+						'y',
+						'tCount',
+						'eCount',
+						'tNear',
+						'eNear',
+						'setMsg',
+						'getMsg',
+					],
+				});
 				entry.fn = compiledCode.fn;
 				if(compiledCode.compileError) {
 					entry.disqualified = true;
@@ -289,7 +296,6 @@ define([
 					makeAPIParams(bot, entry, params),
 					makeAPIExtras({
 						console: entry.console,
-						random: this.random,
 					})
 				);
 				elapsed = performance.now() - begin;

@@ -43,10 +43,9 @@ define([
 		);
 	}
 
-	function makeAPIExtras({console, random}) {
+	function makeAPIExtras({console}) {
 		return {
 			consoleTarget: console,
-			MathRandom: random.floatGenerator(),
 		};
 	}
 
@@ -192,7 +191,7 @@ define([
 				throw new Error('Attempt to modify an entry which was not registered in the game');
 			}
 			if(code !== null) {
-				const compiledCode = entryUtils.compile(code, [
+				const paramsList = [
 					'move',
 					'tJailed',
 					'eJailed',
@@ -201,11 +200,45 @@ define([
 					'tFlag',
 					'eFlag',
 					'messages',
-					'WIDTH',
-					'HEIGHT',
-					'FIELD_PADDING',
-					'DEFENSE_RADIUS',
-				], {pre: 'Math.random = extras.MathRandom;'});
+				];
+				const compiledCode = entryUtils.compile({
+					initPre: `
+						const WIDTH = ${this.width};
+						const HEIGHT = ${this.height};
+						const FIELD_PADDING = ${this.fieldPadding};
+						const DEFENSE_RADIUS = ${this.defenseRadius};
+					`,
+					initCode: `
+						this._fn = function(${paramsList.join(',')}){${code}};
+						Math.random = MathRandom;
+					`,
+					initParams: {
+						MathRandom: this.random.floatGenerator(),
+					}
+				}, {
+					runCode: `
+						let messages = Object.assign({}, _messagesCopy);
+						let action = (_fn.bind(_thisInfo))(
+							${paramsList.join(',')}
+						);
+						return {
+							action,
+							newMessages: messages,
+						};
+					`,
+					runParams: [
+						'_fn',
+						'_thisInfo',
+						'move',
+						'tJailed',
+						'eJailed',
+						'team',
+						'enemies',
+						'tFlag',
+						'eFlag',
+						'_messagesCopy',
+					]
+				});
 				entry.fn = compiledCode.fn;
 				if(compiledCode.compileError) {
 					entry.disqualified = true;
@@ -278,7 +311,7 @@ define([
 			this.winningTeam = teamIndex;
 		}
 
-		moveBot(bot, entry, action) {
+		moveBot(bot, entry, action, newMessages) {
 			if(bot.captured) {
 				return;
 			}
@@ -352,6 +385,7 @@ define([
 					this.declareWinner(bot.teamIndex);
 				}
 			}
+			this.teamObjects[bot.teamIndex].shared = newMessages;
 		}
 
 		getBotParams(bot, entry, objs) {
@@ -376,7 +410,7 @@ define([
 			);
 			const otherObjs = this.teamObjects[(bot.teamIndex === 1) ? 0 : 1];
 			return {
-				'this': bots.filter((b) => (b.id === entry.userID))[0],
+				_thisInfo: bots.filter((b) => (b.id === entry.userID))[0],
 				move: bot.moves,
 				tJailed: team.filter((b) => b.isJailed),
 				eJailed: enemies.filter((b) => b.isJailed),
@@ -392,15 +426,11 @@ define([
 					y: otherObjs.flag.y,
 					pickedUpBy: bots.filter((b) => (b.id === otherObjs.flag.holder))[0] || null,
 				},
-				messages: objs.shared, // mutable
-				WIDTH: this.width,
-				HEIGHT: this.height,
-				FIELD_PADDING: this.fieldPadding,
-				DEFENSE_RADIUS: this.defenseRadius,
+				_messagesCopy: objectUtils.deepCopy(objs.shared),
 			};
 		}
 
-		handleError(bot, params, action, error, sharedRollback) {
+		handleError(bot, params, action, error) {
 			const entry = this.entryLookup.get(bot.entry);
 			entry.errorInput = JSON.stringify(params);
 			entry.errorOutput = JSON.stringify(action);
@@ -410,7 +440,6 @@ define([
 			);
 			if(entry.pauseOnError) {
 				this.random.rollback();
-				this.teamObjects[bot.teamIndex].shared = sharedRollback;
 				throw 'PAUSE';
 			}
 		}
@@ -424,23 +453,26 @@ define([
 			}
 
 			const objs = this.teamObjects[bot.teamIndex];
-			const sharedRollback = objectUtils.deepCopy(objs.shared);
 			const params = this.getBotParams(bot, entry, objs);
 
 			let error = null;
 			let elapsed = 0;
 			let action = null;
+			let newMessages = null;
 
 			const oldRandom = Math.random;
 			try {
 				const begin = performance.now();
-				action = entry.fn(
+
+				let combination = entry.fn(
 					params,
 					makeAPIExtras({
-						console: entry.console,
-						random: this.random,
+						console: entry.console
 					})
 				);
+				action = combination.action;
+				newMessages = combination.newMessages;
+
 				elapsed = performance.now() - begin;
 
 				error = checkError(action, elapsed);
@@ -453,9 +485,9 @@ define([
 			++ entry.codeSteps;
 
 			if(error) {
-				this.handleError(bot, params, action, error, sharedRollback);
+				this.handleError(bot, params, action, error);
 			} else {
-				this.moveBot(bot, entry, action);
+				this.moveBot(bot, entry, action, newMessages);
 			}
 			++ bot.moves;
 
